@@ -1,7 +1,11 @@
 """Query execution API endpoints."""
 
 import json
+from datetime import datetime
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlmodel import Session, select
 from typing import List
 from app.database import get_session
@@ -13,12 +17,14 @@ from app.models.schemas import (
     QueryHistoryEntry,
     NaturalLanguageInput,
     GeneratedSqlResponse,
+    ExportInput,
 )
 from app.services.query_wrapper import execute_query_with_service
 from app.services.query import get_query_history
 from app.services.sql_validator import SqlValidationError
 from app.services.nl2sql import nl2sql_service
 from app.services.metadata import get_cached_metadata
+from app.services.export_service import ExportFormat, render
 
 router = APIRouter(prefix="/api/v1/dbs", tags=["queries"])
 
@@ -88,6 +94,83 @@ async def execute_sql_query(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Query execution failed: {str(e)}",
         )
+
+
+@router.post("/{name}/query/export")
+async def export_query_result(
+    name: str,
+    input_data: ExportInput,
+    session: Session = Depends(get_session),
+) -> Response:
+    """
+    Execute a SQL query and export the result as a downloadable file.
+
+    This endpoint combines "execute query" and "export result" into a single
+    one-shot operation, supporting CSV and JSON formats.
+
+    Args:
+        name: Database connection name
+        input_data: Export input with SQL and target format
+        session: Database session
+
+    Returns:
+        File download response (CSV or JSON)
+    """
+    # Validate export format
+    try:
+        fmt = ExportFormat(input_data.format.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported export format '{input_data.format}'. Supported: csv, json",
+        )
+
+    # Get connection
+    statement = select(DatabaseConnection).where(DatabaseConnection.name == name)
+    connection = session.exec(statement).first()
+
+    if not connection:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database connection '{name}' not found",
+        )
+
+    # Execute query (subtask 1: fetch query result)
+    try:
+        result = await execute_query_with_service(
+            session,
+            name,
+            connection.db_type,
+            connection.url,
+            input_data.sql,
+            QuerySource.MANUAL,
+        )
+    except SqlValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Query execution failed: {str(e)}",
+        )
+
+    # Format data and create file content (subtasks 2 & 3)
+    content, media_type, extension = render(result, fmt)
+
+    filename = f"{name}_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{extension}"
+    # RFC 5987 filename* ensures non-ASCII filenames work across browsers
+    disposition = (
+        f"attachment; filename={filename}; "
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": disposition},
+    )
 
 
 @router.get("/{name}/history", response_model=List[QueryHistoryEntry])

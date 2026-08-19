@@ -2,8 +2,12 @@
 
 import React, { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { Card, Button, Space, Spin, Alert, List, Typography } from "antd";
-import { PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
+import { Card, Button, Space, Spin, Alert, List, Typography, Dropdown, message } from "antd";
+import {
+  PlayCircleOutlined,
+  ReloadOutlined,
+  DownloadOutlined,
+} from "@ant-design/icons";
 import { apiClient } from "../../services/api";
 import { QueryResult, QueryHistoryEntry, QueryInput } from "../../types/query";
 import { SqlEditor } from "../../components/SqlEditor";
@@ -19,6 +23,7 @@ export const QueryExecute: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<QueryHistoryEntry[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (databaseName) {
@@ -76,6 +81,44 @@ export const QueryExecute: React.FC = () => {
     setResult(null);
   };
 
+  /** Export the current query result as CSV or JSON via the backend one-shot endpoint. */
+  const handleExport = async (format: "csv" | "json") => {
+    if (!databaseName || !sql.trim()) return;
+
+    setExporting(true);
+    try {
+      const response = await apiClient.post(
+        `/api/v1/dbs/${databaseName}/query/export`,
+        { sql: sql.trim(), format },
+        { responseType: "blob" }
+      );
+
+      // Trigger browser download from the returned blob
+      const blob = new Blob([response.data], {
+        type:
+          format === "csv"
+            ? "text/csv;charset=utf-8"
+            : "application/json;charset=utf-8",
+      });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${databaseName}_export.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      message.success(`已导出 ${result?.rowCount ?? ""} 行数据为 ${format.toUpperCase()} 文件`);
+    } catch (err: any) {
+      const errorMessage =
+        err.response?.data?.detail || err.message || "导出失败";
+      message.error(`导出失败: ${errorMessage}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div style={{ padding: 24 }}>
       <Card
@@ -125,9 +168,55 @@ export const QueryExecute: React.FC = () => {
           )}
 
           {result && (
-            <Card title="Query Results" size="small">
-              <ResultTable result={result} loading={loading} />
-            </Card>
+            <>
+              {/* Interactive prompt: proactively suggest exporting after a query */}
+              <Alert
+                type="info"
+                showIcon
+                message="需要将这次查询结果导出为 CSV 或 JSON 文件吗？"
+                action={
+                  <Space>
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      loading={exporting}
+                      onClick={() => handleExport("csv")}
+                    >
+                      导出 CSV
+                    </Button>
+                    <Button
+                      size="small"
+                      icon={<DownloadOutlined />}
+                      loading={exporting}
+                      onClick={() => handleExport("json")}
+                    >
+                      导出 JSON
+                    </Button>
+                  </Space>
+                }
+              />
+              <Card
+                title="Query Results"
+                size="small"
+                extra={
+                  <Dropdown
+                    menu={{
+                      items: [
+                        { key: "csv", label: "导出为 CSV" },
+                        { key: "json", label: "导出为 JSON" },
+                      ],
+                      onClick: ({ key }) => handleExport(key as "csv" | "json"),
+                    }}
+                  >
+                    <Button icon={<DownloadOutlined />} loading={exporting}>
+                      导出
+                    </Button>
+                  </Dropdown>
+                }
+              >
+                <ResultTable result={result} loading={loading} />
+              </Card>
+            </>
           )}
         </Space>
       </Card>

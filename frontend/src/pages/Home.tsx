@@ -15,6 +15,7 @@ import {
   Empty,
   Tabs,
   Modal,
+  Alert,
 } from "antd";
 import {
   PlayCircleOutlined,
@@ -22,6 +23,7 @@ import {
   DatabaseOutlined,
   ReloadOutlined,
   ExclamationCircleOutlined,
+  DownloadOutlined,
 } from "@ant-design/icons";
 import { apiClient } from "../services/api";
 import { DatabaseMetadata, TableMetadata } from "../types/metadata";
@@ -51,6 +53,7 @@ export const Home: React.FC = () => {
   const [activeTab, setActiveTab] = useState<"manual" | "natural">("manual");
   const [generatingSql, setGeneratingSql] = useState(false);
   const [nlError, setNlError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (selectedDatabase) {
@@ -136,7 +139,15 @@ export const Home: React.FC = () => {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportCSV = () => handleExport("csv");
+
+  const handleExportJSON = () => handleExport("json");
+
+  /**
+   * Export via the backend one-shot endpoint: POST /query/export executes the
+   * query, formats the data (CSV with UTF-8 BOM / JSON) and returns a file.
+   */
+  const handleExport = (format: "csv" | "json") => {
     if (!queryResult || queryResult.rows.length === 0) {
       message.warning("No data to export");
       return;
@@ -148,77 +159,42 @@ export const Home: React.FC = () => {
         title: "Large Dataset Warning",
         icon: <ExclamationCircleOutlined />,
         content: `You are about to export ${queryResult.rowCount.toLocaleString()} rows. This may take a while and consume memory. Continue?`,
-        onOk: () => exportToCSV(),
+        onOk: () => doExport(format),
       });
     } else {
-      exportToCSV();
+      doExport(format);
     }
   };
 
-  const exportToCSV = () => {
-    if (!queryResult) return;
+  const doExport = async (format: "csv" | "json") => {
+    if (!selectedDatabase || !sql.trim()) return;
 
-    // Generate CSV content
-    const headers = queryResult.columns.map((col) => col.name);
-    const csvRows = [headers.join(",")];
+    setExporting(true);
+    try {
+      const response = await apiClient.post(
+        `/api/v1/dbs/${selectedDatabase}/query/export`,
+        { sql: sql.trim(), format },
+        { responseType: "blob" }
+      );
 
-    queryResult.rows.forEach((row) => {
-      const values = headers.map((header) => {
-        const value = row[header];
-        // Handle null/undefined
-        if (value === null || value === undefined) return "";
-        // Escape quotes and wrap in quotes if contains comma or quote
-        const stringValue = String(value);
-        if (stringValue.includes(",") || stringValue.includes('"') || stringValue.includes("\n")) {
-          return `"${stringValue.replace(/"/g, '""')}"`;
-        }
-        return stringValue;
+      const blob = new Blob([response.data], {
+        type:
+          format === "csv"
+            ? "text/csv;charset=utf-8"
+            : "application/json;charset=utf-8",
       });
-      csvRows.push(values.join(","));
-    });
-
-    const csvContent = csvRows.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
-    link.href = URL.createObjectURL(blob);
-    link.download = `${selectedDatabase}_${timestamp}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    message.success(`Exported ${queryResult.rowCount} rows to CSV`);
-  };
-
-  const handleExportJSON = () => {
-    if (!queryResult || queryResult.rows.length === 0) {
-      message.warning("No data to export");
-      return;
+      const link = document.createElement("a");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
+      link.href = URL.createObjectURL(blob);
+      link.download = `${selectedDatabase}_${timestamp}.${format}`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      message.success(`已导出 ${queryResult?.rowCount} 行数据为 ${format.toUpperCase()} 文件`);
+    } catch (error: any) {
+      message.error(error.response?.data?.detail || "导出失败");
+    } finally {
+      setExporting(false);
     }
-
-    // Warn if result is large
-    if (queryResult.rows.length > 10000) {
-      Modal.confirm({
-        title: "Large Dataset Warning",
-        icon: <ExclamationCircleOutlined />,
-        content: `You are about to export ${queryResult.rowCount.toLocaleString()} rows. This may take a while and consume memory. Continue?`,
-        onOk: () => exportToJSON(),
-      });
-    } else {
-      exportToJSON();
-    }
-  };
-
-  const exportToJSON = () => {
-    if (!queryResult) return;
-
-    const jsonContent = JSON.stringify(queryResult.rows, null, 2);
-    const blob = new Blob([jsonContent], { type: "application/json;charset=utf-8;" });
-    const link = document.createElement("a");
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
-    link.href = URL.createObjectURL(blob);
-    link.download = `${selectedDatabase}_${timestamp}.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    message.success(`Exported ${queryResult.rowCount} rows to JSON`);
   };
 
   const tableColumns =
@@ -603,7 +579,36 @@ export const Home: React.FC = () => {
 
         {/* Query Results */}
         {queryResult && (
-          <Card
+          <>
+            {/* Interactive prompt: proactively ask whether to export after a query */}
+            <Alert
+              type="info"
+              showIcon
+              icon={<DownloadOutlined />}
+              message="需要将这次查询结果导出为 CSV 或 JSON 文件吗？"
+              action={
+                <Space size={8}>
+                  <Button
+                    size="small"
+                    loading={exporting}
+                    onClick={handleExportCSV}
+                    style={{ fontSize: 12, fontWeight: 700 }}
+                  >
+                    导出 CSV
+                  </Button>
+                  <Button
+                    size="small"
+                    loading={exporting}
+                    onClick={handleExportJSON}
+                    style={{ fontSize: 12, fontWeight: 700 }}
+                  >
+                    导出 JSON
+                  </Button>
+                </Space>
+              }
+              style={{ marginBottom: 12, borderWidth: 2, borderColor: "#000000" }}
+            />
+            <Card
             title={
               <Space>
                 <Text
@@ -627,6 +632,7 @@ export const Home: React.FC = () => {
                 <Button
                   size="small"
                   onClick={handleExportCSV}
+                  loading={exporting}
                   style={{ fontSize: 12, fontWeight: 700 }}
                 >
                   EXPORT CSV
@@ -634,6 +640,7 @@ export const Home: React.FC = () => {
                 <Button
                   size="small"
                   onClick={handleExportJSON}
+                  loading={exporting}
                   style={{ fontSize: 12, fontWeight: 700 }}
                 >
                   EXPORT JSON
@@ -657,6 +664,7 @@ export const Home: React.FC = () => {
               bordered
             />
           </Card>
+          </>
         )}
       </div>
     </div>

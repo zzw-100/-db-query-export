@@ -68,6 +68,13 @@ class QueryInput(BaseModel):
     sql: str = Field(..., min_length=1, description="SQL SELECT query to execute")
 
 
+class ExportInput(BaseModel):
+    """Input schema for query result export."""
+
+    sql: str = Field(..., min_length=1, description="SQL SELECT query to execute and export")
+    format: str = Field("csv", description="Export format: csv or json")
+
+
 class QueryColumn(BaseModel):
     """Query result column schema."""
 
