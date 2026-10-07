@@ -15,6 +15,11 @@ engine = create_engine(
 
 def init_db() -> None:
     """Initialize database by creating all tables."""
+    from app.models.access_policy import DatabaseAccessPolicy  # noqa: F401
+    from app.models.database import DatabaseConnection  # noqa: F401
+    from app.models.metadata import DatabaseMetadata  # noqa: F401
+    from app.models.query import QueryHistory  # noqa: F401
+
     SQLModel.metadata.create_all(engine)
 
 

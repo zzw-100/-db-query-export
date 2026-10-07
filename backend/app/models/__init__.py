@@ -17,6 +17,7 @@ BaseModel.model_config = ConfigDict(
     str_strip_whitespace=True,
 )
 
+from app.models.access_policy import DatabaseAccessPolicy  # noqa: E402
 from app.models.database import DatabaseConnection  # noqa: E402
 from app.models.metadata import DatabaseMetadata  # noqa: E402
 from app.models.query import QueryHistory, QuerySource  # noqa: E402

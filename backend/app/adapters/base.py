@@ -37,14 +37,6 @@ class QueryResult:
     rows: List[Dict[str, Any]]
     row_count: int
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for API response."""
-        return {
-            "columns": self.columns,
-            "rows": self.rows,
-            "rowCount": self.row_count,
-        }
-
 
 @dataclass
 class MetadataResult:
@@ -57,12 +49,26 @@ class MetadataResult:
     tables: List[Dict[str, Any]]
     views: List[Dict[str, Any]]
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for API response."""
+
+def result_payload(result: QueryResult | MetadataResult) -> Dict[str, Any]:
+    """Serialize a query or metadata result.
+
+    QueryResult and MetadataResult used to each carry their own to_dict().
+    Those two methods duplicated the same job and drifted from the API shape.
+    Callers now share this one function.
+    """
+    if isinstance(result, QueryResult):
         return {
-            "tables": self.tables,
-            "views": self.views,
+            "columns": result.columns,
+            "rows": result.rows,
+            "rowCount": result.row_count,
         }
+    if isinstance(result, MetadataResult):
+        return {
+            "tables": result.tables,
+            "views": result.views,
+        }
+    raise TypeError(f"Unsupported result type: {type(result).__name__}")
 
 
 class DatabaseAdapter(ABC):

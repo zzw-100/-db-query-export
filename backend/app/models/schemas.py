@@ -120,6 +120,30 @@ class GeneratedSqlResponse(BaseModel):
     explanation: str
 
 
+class AccessPolicyInput(BaseModel):
+    """Per-database access policy update."""
+
+    blocked_tables: list[str] = Field(default_factory=list, alias="blockedTables")
+    blocked_columns: list[str] = Field(default_factory=list, alias="blockedColumns")
+    allow_explain: bool = Field(default=False, alias="allowExplain")
+
+
+class AccessPolicyResponse(BaseModel):
+    """Stored policy plus the effective denylist after merging global settings."""
+
+    database_name: str = Field(..., alias="databaseName")
+    blocked_tables: list[str] = Field(default_factory=list, alias="blockedTables")
+    blocked_columns: list[str] = Field(default_factory=list, alias="blockedColumns")
+    allow_explain: bool = Field(..., alias="allowExplain")
+    effective_blocked_tables: list[str] = Field(
+        default_factory=list, alias="effectiveBlockedTables"
+    )
+    effective_blocked_columns: list[str] = Field(
+        default_factory=list, alias="effectiveBlockedColumns"
+    )
+    blocked_functions: list[str] = Field(default_factory=list, alias="blockedFunctions")
+
+
 # Error Schema
 class ErrorResponse(BaseModel):
     """Error response schema."""

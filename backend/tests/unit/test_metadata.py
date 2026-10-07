@@ -11,6 +11,7 @@ from app.services.metadata import (
     cache_metadata,
     fetch_metadata,
 )
+from app.models.database import DatabaseType
 from app.models.metadata import DatabaseMetadata
 
 
@@ -374,10 +375,11 @@ class TestFetchMetadata:
         test_session.commit()
 
         # Mock get_connection_pool to ensure it's not called
-        with patch("app.services.metadata.get_connection_pool") as mock_pool:
+        with patch("app.services.metadata.connection_factory.get_connection_pool") as mock_pool:
             result = await fetch_metadata(
                 test_session,
                 "test_db",
+                DatabaseType.POSTGRESQL,
                 "postgresql://localhost/test",
                 force_refresh=False,
             )
@@ -404,11 +406,18 @@ class TestFetchMetadata:
         test_session.commit()
 
         # Mock extract_metadata
-        with patch("app.services.metadata.get_connection_pool", return_value=pool):
-            with patch("app.services.metadata.extract_postgres_metadata", return_value=sample_metadata) as mock_extract:
+        with patch(
+            "app.services.metadata.connection_factory.get_connection_pool",
+            new=AsyncMock(return_value=pool),
+        ):
+            with patch(
+                "app.services.metadata.extract_postgres_metadata",
+                new=AsyncMock(return_value=sample_metadata),
+            ) as mock_extract:
                 result = await fetch_metadata(
                     test_session,
                     "test_db",
+                    DatabaseType.POSTGRESQL,
                     "postgresql://localhost/test",
                     force_refresh=False,
                 )
@@ -434,11 +443,18 @@ class TestFetchMetadata:
         test_session.commit()
 
         # Mock extract_metadata
-        with patch("app.services.metadata.get_connection_pool", return_value=pool):
-            with patch("app.services.metadata.extract_postgres_metadata", return_value=sample_metadata) as mock_extract:
+        with patch(
+            "app.services.metadata.connection_factory.get_connection_pool",
+            new=AsyncMock(return_value=pool),
+        ):
+            with patch(
+                "app.services.metadata.extract_postgres_metadata",
+                new=AsyncMock(return_value=sample_metadata),
+            ) as mock_extract:
                 result = await fetch_metadata(
                     test_session,
                     "test_db",
+                    DatabaseType.POSTGRESQL,
                     "postgresql://localhost/test",
                     force_refresh=True,
                 )
@@ -454,11 +470,18 @@ class TestFetchMetadata:
         pool, conn = mock_pool
 
         # Mock extract_metadata
-        with patch("app.services.metadata.get_connection_pool", return_value=pool):
-            with patch("app.services.metadata.extract_postgres_metadata", return_value=sample_metadata) as mock_extract:
+        with patch(
+            "app.services.metadata.connection_factory.get_connection_pool",
+            new=AsyncMock(return_value=pool),
+        ):
+            with patch(
+                "app.services.metadata.extract_postgres_metadata",
+                new=AsyncMock(return_value=sample_metadata),
+            ) as mock_extract:
                 result = await fetch_metadata(
                     test_session,
                     "test_db",
+                    DatabaseType.POSTGRESQL,
                     "postgresql://localhost/test",
                     force_refresh=False,
                 )

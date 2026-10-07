@@ -6,12 +6,16 @@ from typing import List
 from app.database import get_session
 from app.models.database import DatabaseConnection, ConnectionStatus, DatabaseType
 from app.utils.db_parser import detect_database_type
+from app.models.access_policy import DatabaseAccessPolicy
 from app.models.schemas import (
+    AccessPolicyInput,
+    AccessPolicyResponse,
     DatabaseConnectionInput,
     DatabaseConnectionResponse,
     DatabaseMetadataResponse,
     TableMetadata,
 )
+from app.services.access_policy import format_name_list, load_access_policy, parse_name_list
 from app.services.database_service import database_service
 from app.services.metadata import fetch_metadata
 from datetime import datetime, timezone
@@ -220,8 +224,12 @@ async def delete_database(
             detail=f"Database connection '{name}' not found",
         )
 
-    # Close connection pool
+    # Close connection pool and drop the bound executor
     await database_service.close_connection(connection.db_type, name)
+
+    policy_row = session.get(DatabaseAccessPolicy, name)
+    if policy_row is not None:
+        session.delete(policy_row)
 
     # Delete connection
     session.delete(connection)
@@ -282,3 +290,67 @@ async def refresh_database_metadata(
         fetchedAt=fetched_at,
         isStale=is_stale,
     )
+
+
+def _policy_response(session: Session, name: str) -> AccessPolicyResponse:
+    """Build the stored policy and the effective denylist for one database."""
+    record = session.get(DatabaseAccessPolicy, name)
+    effective = load_access_policy(session, name)
+    if record is None:
+        stored_tables: list[str] = []
+        stored_columns: list[str] = []
+        allow_explain = effective.allow_explain
+    else:
+        stored_tables = sorted(parse_name_list(record.blocked_tables))
+        stored_columns = sorted(parse_name_list(record.blocked_columns))
+        allow_explain = record.allow_explain
+    return AccessPolicyResponse(
+        database_name=name,
+        blocked_tables=stored_tables,
+        blocked_columns=stored_columns,
+        allow_explain=allow_explain,
+        effective_blocked_tables=sorted(effective.blocked_tables),
+        effective_blocked_columns=sorted(effective.blocked_columns),
+        blocked_functions=sorted(effective.blocked_functions),
+    )
+
+
+@router.get("/{name}/policy", response_model=AccessPolicyResponse)
+async def get_access_policy(
+    name: str,
+    session: Session = Depends(get_session),
+) -> AccessPolicyResponse:
+    """Return the access policy enforced for this database."""
+    statement = select(DatabaseConnection).where(DatabaseConnection.name == name)
+    if session.exec(statement).first() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database connection '{name}' not found",
+        )
+    return _policy_response(session, name)
+
+
+@router.put("/{name}/policy", response_model=AccessPolicyResponse)
+async def update_access_policy(
+    name: str,
+    input_data: AccessPolicyInput,
+    session: Session = Depends(get_session),
+) -> AccessPolicyResponse:
+    """Replace the per-database table, column, and EXPLAIN policy."""
+    statement = select(DatabaseConnection).where(DatabaseConnection.name == name)
+    if session.exec(statement).first() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database connection '{name}' not found",
+        )
+
+    record = session.get(DatabaseAccessPolicy, name)
+    if record is None:
+        record = DatabaseAccessPolicy(database_name=name)
+    record.blocked_tables = format_name_list(input_data.blocked_tables)
+    record.blocked_columns = format_name_list(input_data.blocked_columns)
+    record.allow_explain = input_data.allow_explain
+    session.add(record)
+    session.commit()
+    session.refresh(record)
+    return _policy_response(session, name)

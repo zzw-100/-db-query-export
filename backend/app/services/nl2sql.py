@@ -1,8 +1,13 @@
 """Natural Language to SQL conversion service using OpenAI."""
 
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
 from app.config import settings
 from app.models.database import DatabaseType
+from app.observability.metrics import metrics
+from app.observability.tracing import trace_span
+from app.resilience.circuit_breaker import llm_circuit_breaker
+from app.resilience.rate_limiter import RateLimitExceeded, rate_limiters
+from app.resilience.retry import retry_async
 import logging
 
 logger = logging.getLogger(__name__)
@@ -105,35 +110,54 @@ Return ONLY the SQL query, nothing else. No explanations, no markdown, just the 
         Raises:
             Exception: If OpenAI API call fails
         """
+        if not llm_circuit_breaker.allow_request():
+            metrics.increment("llm_circuit_open_total")
+            raise Exception(
+                "Failed to generate SQL: generation service is temporarily unavailable"
+            )
+
         try:
             messages = self._build_prompt(user_prompt, metadata, db_type)
 
-            # Call OpenAI API
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.1,  # Low temperature for consistent SQL generation
-                max_tokens=500,
-            )
+            async def call_model():
+                return await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.1,
+                    max_tokens=500,
+                )
+
+            async with rate_limiters.llm.slot(timeout=settings.rate_limit_acquire_timeout):
+                with trace_span("llm.generate_sql"):
+                    response = await retry_async(
+                        call_model,
+                        retry_on=(APIConnectionError, APITimeoutError, RateLimitError, TimeoutError),
+                    )
+
+            llm_circuit_breaker.record_success()
+            metrics.increment("llm_requests_total")
 
             generated_sql = response.choices[0].message.content.strip()
 
-            # Clean up the response (remove markdown code blocks if present)
             if generated_sql.startswith("```sql"):
                 generated_sql = generated_sql.replace("```sql", "").replace("```", "").strip()
             elif generated_sql.startswith("```"):
                 generated_sql = generated_sql.replace("```", "").strip()
 
-            # Generate explanation
             explanation = f"Generated SQL from: {user_prompt}"
-
             logger.info(f"Generated SQL for prompt: {user_prompt[:50]}...")
-
             return {"sql": generated_sql, "explanation": explanation}
 
+        except RateLimitExceeded as exc:
+            metrics.increment("llm_rate_limited_total")
+            raise Exception(f"Failed to generate SQL: {exc}") from exc
         except Exception as e:
+            llm_circuit_breaker.record_failure()
+            metrics.increment("llm_errors_total")
             logger.error(f"Failed to generate SQL: {str(e)}")
-            raise Exception(f"Failed to generate SQL: {str(e)}")
+            if str(e).startswith("Failed to generate SQL"):
+                raise
+            raise Exception(f"Failed to generate SQL: {str(e)}") from e
 
 
 # Global instance

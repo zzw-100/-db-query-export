@@ -7,6 +7,7 @@ from sqlmodel import Session, select, desc
 from app.models.query import QueryHistory, QuerySource
 from app.models.database import DatabaseType
 from app.models.schemas import QueryResult, QueryColumn
+from app.config import settings
 from app.services.sql_validator import validate_and_transform_sql, SqlValidationError
 from app.services import connection_factory
 from app.services import mysql_query
@@ -40,7 +41,9 @@ async def execute_query(
     """
     # Validate and transform SQL
     try:
-        validated_sql = validate_and_transform_sql(sql, limit=1000, db_type=db_type)
+        validated_sql = validate_and_transform_sql(
+            sql, limit=settings.query_default_limit, db_type=db_type
+        )
     except SqlValidationError as e:
         # Save failed query to history
         await save_query_history(
@@ -186,7 +189,6 @@ async def save_query_history(
     session.commit()
     session.refresh(history)
 
-    # Keep only last 50 queries per database
     await cleanup_old_queries(session, database_name)
 
     return history
@@ -194,13 +196,18 @@ async def save_query_history(
 
 async def cleanup_old_queries(session: Session, database_name: str) -> None:
     """
-    Keep only the last 50 queries for a database.
+    Keep only the configured number of recent queries for a database.
+
+    The retention count comes from settings.query_history_retention.
 
     Args:
         session: SQLite database session
         database_name: Database connection name
     """
-    # Get all queries for this database, ordered by executed_at DESC
+    keep = settings.query_history_retention
+    if keep < 1:
+        keep = 1
+
     statement = (
         select(QueryHistory)
         .where(QueryHistory.database_name == database_name)
@@ -208,16 +215,15 @@ async def cleanup_old_queries(session: Session, database_name: str) -> None:
     )
     all_queries = session.exec(statement).all()
 
-    # Delete queries beyond the 50th
-    if len(all_queries) > 50:
-        queries_to_delete = all_queries[50:]
+    if len(all_queries) > keep:
+        queries_to_delete = all_queries[keep:]
         for query in queries_to_delete:
             session.delete(query)
         session.commit()
 
 
 async def get_query_history(
-    session: Session, database_name: str, limit: int = 50
+    session: Session, database_name: str, limit: int | None = None
 ) -> List[QueryHistory]:
     """
     Get query history for a database.
@@ -225,11 +231,13 @@ async def get_query_history(
     Args:
         session: SQLite database session
         database_name: Database connection name
-        limit: Maximum number of queries to return
+        limit: Maximum number of queries to return. Defaults to the configured retention.
 
     Returns:
         List of QueryHistory entries
     """
+    if limit is None:
+        limit = settings.query_history_retention
     statement = (
         select(QueryHistory)
         .where(QueryHistory.database_name == database_name)

@@ -21,8 +21,10 @@ class DatabaseMetadata(SQLModel, table=True):
 
     @property
     def is_stale(self) -> bool:
-        """Check if metadata is stale (older than 24 hours)."""
-        # Convert both to naive UTC datetime for comparison
+        """Check if metadata is older than settings.metadata_cache_hours."""
+        from app.config import settings
+
+        hours = settings.metadata_cache_hours
         now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         fetched_at_naive = self.fetched_at.replace(tzinfo=None) if self.fetched_at.tzinfo else self.fetched_at
-        return now_naive - fetched_at_naive > timedelta(hours=24)
+        return now_naive - fetched_at_naive > timedelta(hours=hours)

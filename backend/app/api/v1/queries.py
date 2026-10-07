@@ -21,10 +21,13 @@ from app.models.schemas import (
 )
 from app.services.query_wrapper import execute_query_with_service
 from app.services.query import get_query_history
-from app.services.sql_validator import SqlValidationError
+from app.services.sql_validator import SqlValidationError, AccessDeniedError
 from app.services.nl2sql import nl2sql_service
 from app.services.metadata import get_cached_metadata
 from app.services.export_service import ExportFormat, render
+from app.services.access_policy import load_access_policy
+from app.resilience.rate_limiter import RateLimitExceeded
+from app.services.executor_registry import WrongDatabaseError
 
 router = APIRouter(prefix="/api/v1/dbs", tags=["queries"])
 
@@ -82,8 +85,24 @@ async def execute_sql_query(
             connection.url,
             input_data.sql,
             QuerySource.MANUAL,
+            policy=load_access_policy(session, name),
         )
         return result
+    except RateLimitExceeded as e:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(e),
+        )
+    except WrongDatabaseError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except AccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        )
     except SqlValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -144,6 +163,22 @@ async def export_query_result(
             connection.url,
             input_data.sql,
             QuerySource.MANUAL,
+            policy=load_access_policy(session, name),
+        )
+    except RateLimitExceeded as e:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(e),
+        )
+    except WrongDatabaseError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except AccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
         )
     except SqlValidationError as e:
         raise HTTPException(
@@ -176,7 +211,7 @@ async def export_query_result(
 @router.get("/{name}/history", response_model=List[QueryHistoryEntry])
 async def get_query_history_for_database(
     name: str,
-    limit: int = 50,
+    limit: int | None = None,
     session: Session = Depends(get_session),
 ) -> List[QueryHistoryEntry]:
     """

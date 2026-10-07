@@ -5,6 +5,8 @@ from sqlmodel import Session, select, desc
 from app.models.query import QueryHistory, QuerySource
 from app.models.database import DatabaseType
 from app.models.schemas import QueryResult, QueryColumn
+from app.config import settings
+from app.services.access_policy import AccessPolicy
 from app.services.database_service import database_service
 from app.services.sql_validator import SqlValidationError
 from app.services.query import save_query_history, get_query_history, cleanup_old_queries
@@ -17,6 +19,7 @@ async def execute_query_with_service(
     url: str,
     sql: str,
     query_source: QuerySource = QuerySource.MANUAL,
+    policy: AccessPolicy | None = None,
 ) -> QueryResult:
     """
     Execute SQL query using new database service.
@@ -43,7 +46,8 @@ async def execute_query_with_service(
             name=database_name,
             url=url,
             sql=sql,
-            limit=1000,
+            limit=settings.query_default_limit,
+            policy=policy,
         )
 
         # Convert adapter result to API schema

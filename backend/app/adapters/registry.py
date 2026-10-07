@@ -87,12 +87,70 @@ class DatabaseAdapterRegistry:
         # Use connection name and type as cache key
         cache_key = f"{db_type.value}:{config.name}"
 
-        if cache_key not in self._instances:
-            adapter_class = self._adapters[db_type]
-            self._instances[cache_key] = adapter_class(config)
-            logger.info(f"Created new {adapter_class.__name__} instance for {config.name}")
+        if cache_key in self._instances:
+            existing = self._instances[cache_key]
+            if existing.config.url != config.url:
+                raise RuntimeError(
+                    f"Executor for '{config.name}' is bound to a different URL. "
+                    "Call rebind() so the request cannot run on the wrong database."
+                )
+            return existing
 
+        adapter_class = self._adapters[db_type]
+        self._instances[cache_key] = adapter_class(config)
+        logger.info(f"Created new {adapter_class.__name__} instance for {config.name}")
         return self._instances[cache_key]
+
+    def create_ephemeral(
+        self, db_type: DatabaseType, config: ConnectionConfig
+    ) -> DatabaseAdapter:
+        """Create an adapter that is not cached.
+
+        Connection probes must not reuse a shared executor, or a later probe
+        would talk to the database opened by an earlier one.
+        """
+        if db_type not in self._adapters:
+            available = [item.value for item in self._adapters.keys()]
+            raise ValueError(
+                f"Unsupported database type: {db_type.value}. "
+                f"Available types: {available}"
+            )
+        return self._adapters[db_type](config)
+
+    async def rebind(
+        self, db_type: DatabaseType, config: ConnectionConfig
+    ) -> DatabaseAdapter:
+        """Return the adapter for this database, replacing it when the URL changed."""
+        if db_type not in self._adapters:
+            available = [item.value for item in self._adapters.keys()]
+            raise ValueError(
+                f"Unsupported database type: {db_type.value}. "
+                f"Available types: {available}"
+            )
+
+        cache_key = f"{db_type.value}:{config.name}"
+        existing = self._instances.get(cache_key)
+        if existing is not None and existing.config.url != config.url:
+            logger.warning(
+                "Closing stale executor for %s; URL changed", config.name
+            )
+            await existing.close_connection_pool()
+            del self._instances[cache_key]
+            existing = None
+
+        if existing is None:
+            adapter_class = self._adapters[db_type]
+            existing = adapter_class(config)
+            self._instances[cache_key] = existing
+            logger.info(
+                "Bound %s executor for %s", adapter_class.__name__, config.name
+            )
+
+        if existing.config.name != config.name or existing.config.url != config.url:
+            raise RuntimeError(
+                f"Executor identity mismatch for '{config.name}'"
+            )
+        return existing
 
     async def close_adapter(self, db_type: DatabaseType, name: str) -> None:
         """Close and remove adapter instance.
